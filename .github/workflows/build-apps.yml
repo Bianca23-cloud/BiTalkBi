@@ -1,0 +1,172 @@
+name: Construire les applications
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Un nouvel envoi annule la fabrication précédente encore en cours (seule la dernière version compte)
+concurrency:
+  group: fabrication
+  cancel-in-progress: true
+
+jobs:
+  # 1) Enregistrer chaque mot/phrase avec une VOIX NATIVE de chaque langue (gratuit, une seule fois grâce au cache)
+  voix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - uses: actions/cache/restore@v4
+        with:
+          path: www/audio
+          key: voix-${{ github.run_id }}
+          restore-keys: voix-
+      - run: pip install edge-tts
+      - run: python scripts/make_audio.py
+      - uses: actions/cache/save@v4      # on garde les enregistrements même si un essai échoue
+        if: always()
+        with:
+          path: www/audio
+          key: voix-${{ github.run_id }}-${{ github.run_attempt }}
+      - uses: actions/upload-artifact@v4
+        with: { name: voix, path: www/audio }
+
+  windows:
+    needs: voix
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: voix, path: www/audio }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: bash scripts/vendor_webllm.sh
+        shell: bash
+      - run: python scripts/build.py
+      - run: npm install
+      - run: npm run dist:win
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            dist/BiTalkBi-Windows-Setup.exe
+            dist/BiTalkBi-Windows-portable.exe
+
+  linux:
+    needs: voix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: voix, path: www/audio }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: bash scripts/vendor_webllm.sh
+      - run: python3 scripts/build.py
+      - run: npm install
+      - run: npm run dist:linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            dist/BiTalkBi-Linux.AppImage
+            dist/BiTalkBi-Linux.deb
+
+  android:
+    needs: voix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: voix, path: www/audio }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 21 }
+      - run: bash scripts/vendor_webllm.sh
+      - run: python3 scripts/build.py
+      - name: Installer Capacitor (+ voix du téléphone + micro / reconnaissance vocale)
+        run: npm install --save --legacy-peer-deps @capacitor/core@latest @capacitor/cli@latest @capacitor/android@latest @capacitor-community/text-to-speech@latest @capacitor-community/speech-recognition@latest
+      - run: npx cap add android
+      - name: Autoriser le micro (RECORD_AUDIO) et le service de reconnaissance vocale d'Android
+        run: |
+          python3 - <<'P'
+          p = "android/app/src/main/AndroidManifest.xml"; s = open(p).read()
+          if "RECORD_AUDIO" not in s:
+              s = s.replace("</manifest>", '    <uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <queries>\n        <intent>\n            <action android:name="android.speech.RecognitionService" />\n        </intent>\n    </queries>\n</manifest>')
+          open(p, "w").write(s)
+          P
+          grep -n "RECORD_AUDIO\|RecognitionService" android/app/src/main/AndroidManifest.xml
+      - name: Icône BiTalkBi
+        run: |
+          rm -rf android/app/src/main/res/mipmap-anydpi-v26
+          for d in android/app/src/main/res/mipmap-*dpi; do
+            cp www/icons/icon-192.png "$d/ic_launcher.png"
+            cp www/icons/icon-192.png "$d/ic_launcher_round.png"
+          done
+      - run: npx cap sync android
+      - name: Vérifier que les extensions voix + micro sont dans l'appli
+        run: cat android/app/src/main/assets/capacitor.plugins.json && grep -q SpeechRecognition android/app/src/main/assets/capacitor.plugins.json && grep -q TextToSpeech android/app/src/main/assets/capacitor.plugins.json
+      - name: Construire l'APK
+        working-directory: android
+        run: chmod +x gradlew && ./gradlew assembleDebug --no-daemon
+      - run: cp android/app/build/outputs/apk/debug/app-debug.apk BiTalkBi-Android.apk
+      - uses: actions/upload-artifact@v4
+        with: { name: android, path: BiTalkBi-Android.apk }
+
+  # Version web (iPhone, iPad, tous navigateurs) avec les voix natives
+  web:
+    needs: voix
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.d.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: voix, path: www/audio }
+      - run: bash scripts/vendor_webllm.sh
+      - run: python3 scripts/build.py
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: www }
+      - id: d
+        uses: actions/deploy-pages@v4
+
+  release:
+    needs: [ windows, linux, android, web ]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: windows, path: files }
+      - uses: actions/download-artifact@v4
+        with: { name: linux, path: files }
+      - uses: actions/download-artifact@v4
+        with: { name: android, path: files }
+      - run: ls -la files
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v3.0.${{ github.run_number }}
+          name: BiTalkBi 3.0.${{ github.run_number }} — tuteur IA gratuit, même hors ligne
+          make_latest: true
+          body: |
+            BiTalkBi 3.0 = BIBILEARN + BiaTalk : tuteur IA (chat, appel, jeux de rôle, personnages, débats, photo, cours express, explique-moi), IA gratuite sans clé, IA hors ligne (Bibi intégré, IA dans l'appli WebLLM, IA locale Jan/Ollama/LM Studio, Chrome), micros sur Android, iPhone et Windows, 15 langues, 218 phrases, révisions espacées. Installation Windows en un clic.
+
+            Téléchargements directs :
+            - Windows 11 (installation) : BiTalkBi-Windows-Setup.exe
+            - Windows 11 (sans installation) : BiTalkBi-Windows-portable.exe
+            - Linux : BiTalkBi-Linux.AppImage ou BiTalkBi-Linux.deb
+            - Android : BiTalkBi-Android.apk
+            - iPhone / iPad : https://bianca23-cloud.github.io/BiTalkBi/ (Safari → Partager → Sur l'écran d'accueil)
+          files: files/*

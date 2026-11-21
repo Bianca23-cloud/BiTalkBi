@@ -1,0 +1,3 @@
+{ "appId": "io.github.bianca23cloud.bitalkbi", "appName": "BiTalkBi", "webDir": "www",
+  "server": { "androidScheme": "https", "cleartext": true },
+  "android": { "allowMixedContent": true } }
