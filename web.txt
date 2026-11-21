@@ -1,0 +1,7 @@
+OK web (version 3.0 en ligne)
+Voix natives intégrées : 3780 enregistrements
+BiTalkBi-Windows-Setup.exe -> HTTP 200
+BiTalkBi-Windows-portable.exe -> HTTP 200
+BiTalkBi-Linux.AppImage -> HTTP 200
+BiTalkBi-Linux.deb -> HTTP 200
+BiTalkBi-Android.apk -> HTTP 200
